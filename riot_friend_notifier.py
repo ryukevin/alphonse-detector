@@ -9,6 +9,7 @@
   python riot_friend_notifier.py          # 실행 (처음엔 config.json 생성 후 종료)
   python riot_friend_notifier.py --dump   # 현재 보이는 친구 상태 원본 출력 (점검용)
 """
+import base64
 import json
 import os
 import sys
@@ -34,7 +35,36 @@ PRODUCT_NAMES = {
     "valorant": "발로란트",
     "league_of_legends": "롤",
     "keystone": "라이엇 클라이언트",
+    "riot_client": "라이엇 클라이언트",
     "bacon": "레전드 오브 룬테라",
+}
+
+# 롤 queueId (TFT도 product는 league_of_legends로 옴)
+LOL_QUEUES = {
+    "420": "솔로랭크",
+    "440": "자유랭크",
+    "400": "일반",
+    "430": "일반",
+    "480": "신속 대전",
+    "490": "빠른 대전",
+    "450": "칼바람",
+    "900": "우르프",
+    "1700": "아레나",
+    "1090": "TFT 일반",
+    "1100": "TFT 랭크",
+    "1130": "TFT 초고속",
+    "1160": "TFT 더블업",
+}
+
+VALORANT_QUEUES = {
+    "competitive": "경쟁전",
+    "unrated": "일반전",
+    "swiftplay": "신속 플레이",
+    "spikerush": "스파이크 돌격",
+    "deathmatch": "데스매치",
+    "ggteam": "단계적 확대",
+    "hurm": "팀 데스매치",
+    "premier": "프리미어",
 }
 
 
@@ -74,8 +104,37 @@ def matches(presence, target):
     return name == target
 
 
+def decode_private(presence):
+    """presence의 private 필드(base64 JSON)를 dict로. 없거나 형식이 다르면 빈 dict."""
+    try:
+        data = json.loads(base64.b64decode(presence.get("private") or ""))
+        if isinstance(data, str):  # 롤은 JSON 문자열을 한 번 더 감싸서 보냄
+            data = json.loads(data)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def game_detail(presence):
+    """게임 중이면 '솔로랭크 게임 중' 같은 설명, 아니면 None. 로비/큐/챔피언 선택은 무시."""
+    product = presence.get("product")
+    info = decode_private(presence)
+    if product == "league_of_legends":
+        if info.get("gameStatus") != "inGame":
+            return None
+        queue = LOL_QUEUES.get(str(info.get("queueId", ""))) or info.get("gameQueueType") or "사용자 설정"
+        return f"{queue} 게임 중"
+    if product == "valorant":
+        match = info.get("matchPresenceData", info)  # 버전에 따라 한 단계 안에 들어 있음
+        if match.get("sessionLoopState") != "INGAME":
+            return None
+        queue_id = match.get("queueId") or ""
+        return f"{VALORANT_QUEUES.get(queue_id) or queue_id or '사용자 설정'} 게임 중"
+    return None
+
+
 def current_status(presences, friend, ignore_mobile):
-    """친구가 접속 중인 게임 이름들의 집합. 비어 있으면 오프라인."""
+    """친구가 접속 중인 게임 이름(게임 중이면 큐 종류 포함)들의 집합. 비어 있으면 오프라인."""
     products = set()
     for p in presences:
         if not matches(p, friend):
@@ -84,7 +143,9 @@ def current_status(presences, friend, ignore_mobile):
         if state == "offline" or (ignore_mobile and state == "mobile"):
             continue
         product = p.get("product") or "unknown"
-        products.add(PRODUCT_NAMES.get(product, product))
+        name = PRODUCT_NAMES.get(product, product)
+        detail = game_detail(p)
+        products.add(f"{name} {detail}" if detail else name)
     return frozenset(products)
 
 
@@ -112,6 +173,7 @@ def main():
     friends = [f for f in cfg["friends"] if f.strip()]
     last = {f: None for f in friends}  # None = 아직 모름 (첫 조회 때는 알림 없이 기록만)
     client_up = None
+    announced = False  # 실행 후 첫 조회 결과는 디스코드로도 한 번 보냄
     print(f"감시 시작: {', '.join(friends)}  ({cfg['interval_seconds']}초 간격, Ctrl+C로 종료)")
 
     while True:
@@ -123,11 +185,14 @@ def main():
             last = {f: None for f in friends}  # 다시 켜지면 기준 상태부터 새로 잡음
         else:
             client_up = True
+            startup = []
             for f in friends:
                 now = current_status(presences, f, cfg["ignore_mobile"])
                 before = last[f]
                 if before is None:
                     print(f"  {f}: {'온라인 (' + ', '.join(sorted(now)) + ')' if now else '오프라인'}")
+                    if not announced:
+                        startup.append(f"🟢 **{f}** 접속 중 ({', '.join(sorted(now))})" if now else f"⚫ **{f}** 오프라인")
                 elif now != before:
                     if now and not before:
                         notify(cfg["discord_webhook_url"], f"🟢 **{f}** 접속! ({', '.join(sorted(now))})")
@@ -136,6 +201,9 @@ def main():
                     else:
                         notify(cfg["discord_webhook_url"], f"🔄 **{f}** 상태 변경: {', '.join(sorted(now))}")
                 last[f] = now
+            if not announced:
+                notify(cfg["discord_webhook_url"], "\n".join(startup))
+                announced = True
         time.sleep(cfg["interval_seconds"])
 
 
