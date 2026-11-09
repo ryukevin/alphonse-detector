@@ -48,7 +48,7 @@ python riot_friend_notifier.py --dump
 
 1. 라이엇 클라이언트가 만드는 `lockfile`에서 로컬 API의 포트와 비밀번호를 읽음
 2. `https://127.0.0.1:{포트}/chat/v4/presences`에서 친구목록 상태 조회
-3. presence의 `private` 필드(base64 JSON)에서 게임 상태와 큐 종류(`queueId`)를 읽음
+3. presence의 `private` 필드(base64 JSON)에서 알퐁스 상태와 큐 종류(`queueId`)를 읽음
 4. 이전 상태와 비교해 바뀌었으면 디스코드 웹훅으로 전송
 
 ## 주의
